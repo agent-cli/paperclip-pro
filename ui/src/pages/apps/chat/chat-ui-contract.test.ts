@@ -1,8 +1,20 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
+/**
+ * The source file's text, with line endings normalised to `\n`.
+ *
+ * Several assertions below quote source across a line break — a wrapped string
+ * literal or an `||` continued onto the next line — so they only match if the
+ * file's newlines are the ones written in the literal. On a Windows checkout
+ * `core.autocrlf=true` puts CRLF on disk while the repository stores LF, and
+ * every one of those assertions failed there on content that was correct.
+ *
+ * Normalising once here rather than per assertion: the assertions are about
+ * *what the source says*, and a checkout's line endings are not part of that.
+ */
 function source(relativePath: string) {
-  return readFileSync(new URL(relativePath, import.meta.url), "utf8");
+  return readFileSync(new URL(relativePath, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 }
 
 describe("chat connector UI contract", () => {

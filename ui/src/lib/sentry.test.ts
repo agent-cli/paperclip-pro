@@ -319,6 +319,13 @@ describe("captureBrowserException", () => {
 });
 
 describe("browser error diagnostics with the real SDK", () => {
+  // The only test here that boots the real `@sentry/browser` rather than a stub,
+  // so the only one that waits on it: two `Sentry.flush(2000)` calls plus two
+  // teardown flushes. Vitest's 5s default leaves no room for a loaded machine —
+  // this timed out intermittently under a full-suite run and passed every time in
+  // isolation, which is the signature of a budget that is too tight rather than of
+  // a test that is wrong. The work is bounded (each flush is given 2s), so the fix
+  // is a budget that fits the bound rather than a shorter flush.
   it("emits bounded component and translation context without page data or scope leakage", async () => {
     const Sentry = await vi.importActual<typeof import("@sentry/browser")>("@sentry/browser");
     const events: Array<Record<string, unknown>> = [];
@@ -376,7 +383,7 @@ describe("browser error diagnostics with the real SDK", () => {
       document.documentElement.classList.remove("translated-ltr", "private-customer-class");
       window.history.replaceState({}, "", previousPath);
     }
-  });
+  }, 20_000);
 });
 
 /**

@@ -1356,6 +1356,25 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         await act(async () => root.unmount());
       });
 
+      it("falls back to the walk instead of a source that is not offered", async () => {
+        // Refuses rather than substitutes. The snap effect would replace a source
+        // this instance does not offer with whichever one is listed first, and
+        // the run would go on to hire that one instead — answering a question the
+        // customer never saw with an answer they never chose, which is worse than
+        // asking them.
+        mockAdapterRegistry.disabled = new Set(["opencode_local"]);
+        const root = await nameOrganization();
+
+        expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+        expect(document.body.textContent).toContain(
+          "OpenCode is not available on this instance",
+        );
+        // On the naming step, where the customer can now answer for themselves.
+        expect(document.body.textContent).toContain("Create your first agent");
+
+        await act(async () => root.unmount());
+      });
+
       it("draws a two-segment strip, so it never claims the two skipped steps", async () => {
         const root = await nameOrganization();
 
