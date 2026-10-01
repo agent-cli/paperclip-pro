@@ -47,16 +47,16 @@ import { Stepper } from "./Stepper";
  * prototype to the app's adapter registry to draw three boxes, and the next
  * adapter would mean editing a module this file deliberately does not reach for.
  *
- * The convention is therefore a manual one, and this note is what it is: keep it
- * equal to the adapters `adapter-display-registry.ts` marks `recommended`,
- * because the shipped step's row is built from exactly that filter and a source
- * here that is not `recommended` is a tile the wizard could never render.
+ * The convention is a manual one: keep this equal to the adapters
+ * `adapter-display-registry.ts` marks `recommended`, because the shipped step's
+ * row is built from exactly that filter and a source here that is not
+ * `recommended` is a tile the wizard could never render.
  *
- * Nothing enforces the two halves agree — `adapter-display-registry.test.ts`
- * pins the registry's set, and this list is not read by it — so adding a tile
- * here is a second, separate edit. A prototype that drew a tile the product had
- * withdrawn is the failure this convention is here to prevent, and it is caught
- * by reading both, not by a test.
+ * Only one half of that is enforced. `adapter-display-registry.test.ts` pins the
+ * registry's set exactly, so a fourth `recommended` adapter fails there — but
+ * this list is not read by it, so a tile added here alone fails nothing. A
+ * prototype that drew a tile the product had withdrawn is the failure this note
+ * is here to prevent, and it is caught by reading both, not by a test.
  */
 const MODEL_SOURCES: ModelSource[] = [
   {
