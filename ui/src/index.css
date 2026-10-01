@@ -2533,6 +2533,13 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
      whole row would make the tile grow as it travelled, which reads as a
      different tile arriving rather than the one just pressed being kept. */
   --sz-source-tile-two-up: calc((100% - 0.75rem) / 2);
+  /* The same, for a row of three. The connect step's row is built from the
+     adapters the display registry marks `recommended`, so its width is not a
+     fixed two: holding a three-tile row's survivor at two-up grows it by half
+     as it travels, which is the same defect the two-up token exists to prevent.
+     A fourth source needs its own token rather than a fallback that is quietly
+     wrong. */
+  --sz-source-tile-three-up: calc((100% - 1.5rem) / 3);
   /* The connect step's sign-in card, held at one height across its own states.
      It opens on a spinner and then fills with an instruction and a field, and
      the height is fixed so that arrival is the only movement — a card that grew

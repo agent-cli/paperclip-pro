@@ -56,6 +56,7 @@ type ConnectPhase =
 import { secretsApi } from "../api/secrets";
 import { Label } from "./ui/label";
 import { Input } from "./ui/input";
+import { Checkbox } from "./ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import { useLocation, useNavigate, useParams } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
@@ -108,7 +109,7 @@ import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/a
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_KIMI_LOCAL_MODEL } from "@paperclipai/adapter-kimi-local";
-import { DEFAULT_OPENCODE_LOCAL_MODEL, isValidOpenCodeModelId } from "@paperclipai/adapter-opencode-local";
+import { isValidOpenCodeModelId, OPENCODE_ZEN_FREE_MODEL } from "@paperclipai/adapter-opencode-local";
 import {
   canGoBackFromOnboardingStep,
   canJumpToOnboardingStep,
@@ -122,9 +123,13 @@ import {
   AGENT_ARC_WIZARD_STEPS,
   ONBOARDING_STEP_LABELS,
   ONBOARDING_WIZARD_STEPS,
+  QUICK_START_STEP_COUNT,
+  QUICK_START_STEP_LABELS,
+  QUICK_START_WIZARD_STEPS,
   Stepper,
   agentArcStepFor,
   onboardingStepPositionFor,
+  quickStartStepPositionFor,
 } from "./onboarding/Stepper";
 import { AgentPreview } from "./onboarding/AgentPreview";
 import { ModelSourceTiles, type CredentialMode } from "./onboarding/ModelSourceTiles";
@@ -251,11 +256,66 @@ const MODEL_SOURCE_INLINE_MARKS: Record<string, ComponentType<{ className?: stri
 const API_KEY_ENV_KEYS: Record<string, string> = {
   claude_local: ANTHROPIC_API_KEY_ENV_KEY,
   codex_local: "OPENAI_API_KEY",
+  // The provider OpenCode reads an OpenRouter key from — see
+  // `AI_CONNECTION_CAPABILITIES.openrouter` in @paperclipai/shared and the
+  // `PROVIDER_AUTH_ENV_KEYS` list in `agent-ai-connection-default.ts`. This was
+  // falling through to the generic `API_KEY`, which is not a variable OpenCode
+  // reads, so a saved OpenRouter key was both invisible here and inert if
+  // pasted. (An OpenCode Zen key is not an environment variable at all — that
+  // comes from `opencode auth login` — which is one more reason the field is
+  // optional here: there is no key to paste for the model onboarding picks.)
+  opencode_local: "OPENROUTER_API_KEY",
 };
 
 function apiKeyEnvKeyFor(adapterType: string): string {
   return API_KEY_ENV_KEYS[adapterType] ?? "API_KEY";
 }
+
+/**
+ * The model this step hires an OpenCode agent with.
+ *
+ * Not the adapter's own `DEFAULT_OPENCODE_LOCAL_MODEL` (a paid `openai/*`
+ * model), because this step has no way to ask which model someone wants: it
+ * offers no model picker at all, precisely because a first-run customer has
+ * nothing to judge a model list by. So the choice the step does not make has to
+ * be one that works for everyone.
+ *
+ * `OPENCODE_ZEN_FREE_MODEL` is the pick for that reason: OpenCode Zen serves it
+ * without a credential, which is the other half of why this step can finish
+ * with no key — a paid model would put the key back on the critical path and
+ * make OpenCode no better an onboarding choice than the two sources already
+ * there.
+ *
+ * Scoped to onboarding on purpose. Agent config forms keep the adapter default,
+ * where the model is already a field the customer chose deliberately.
+ */
+const ONBOARDING_OPENCODE_MODEL = OPENCODE_ZEN_FREE_MODEL;
+
+/**
+ * Whether this step can hire its adapter with no key at all.
+ *
+ * OpenCode can, because of `ONBOARDING_OPENCODE_MODEL`. Every other source
+ * offered here cannot: a Claude or OpenAI agent with no credential cannot run
+ * its first task, so onboarding that hired one anyway would hand over a company
+ * whose only agent fails on contact.
+ */
+function apiKeyOptionalFor(adapterType: string): boolean {
+  return adapterType === "opencode_local";
+}
+
+/**
+ * The agent a run that skipped advanced setup hires.
+ *
+ * `ceo` because it is the role the organization has exactly one of, and the one
+ * the hire answers to when it names an agent for a role with no name typed. A
+ * divergence from `DEFAULT_AGENT_ROLE` on purpose: the long walk asks nothing
+ * about this either, and a first agent is the one that ends up being the
+ * organization's own agent.
+ */
+const QUICK_START_AGENT_NAME = "Dustin";
+const QUICK_START_AGENT_ROLE = "ceo" as const;
+/** The source a run that skipped advanced setup is hired on. */
+const QUICK_START_ADAPTER = "opencode_local";
 
 function ModelSourceMark({
   type,
@@ -619,6 +679,40 @@ function OnboardingWizardInner({
    * whether the row has been *answered* on this visit.
    */
   const [sourcePicked, setSourcePicked] = useState(false);
+  /**
+   * Whether this run names and configures its first agent, or takes the defaults.
+   *
+   * Set on step 1 and read once, when the organization is created. Unchecked —
+   * the default, because a first-run customer who is answering one field has not
+   * come here to make harness decisions — the run skips the naming and connect
+   * steps entirely and hires the quick-start agent.
+   *
+   * Restored like everything else on this step, so a run interrupted between
+   * ticking the box and pressing Continue stays on the walk it chose.
+   */
+  const [advancedSetup, setAdvancedSetup] = useState(
+    (saved?.advancedSetup as boolean | undefined) ?? false,
+  );
+  /**
+   * A quick-start hire waiting to run, held as the company it was queued for.
+   *
+   * The hire needs a company id, and `handleCreateCompany` is holding the
+   * response that produces one — the id is not in state yet at the point the
+   * decision is made. So the decision is queued and the effect below runs it
+   * once the id lands, rather than the create handler reaching into a state
+   * update it cannot read.
+   *
+   * The company id rather than a boolean, because the queue outlives the screen
+   * that set it: the wizard stays mounted while closed, and a company can be
+   * adopted from the route in between. A bare flag would fire against whichever
+   * company happened to arrive next — an agent nobody asked for, on an
+   * organization they were navigating to. Holding the id makes the effect refuse
+   * anything but its own company, and `reset` drops it outright.
+   *
+   * Deliberately not restored from the draft: a queued hire describes a company
+   * that may not have been created.
+   */
+  const [autoHireQueuedFor, setAutoHireQueuedFor] = useState<string | null>(null);
   const savedNativeRunnerDraft = saved?.adapterType === "paperclip_runner";
   const [cwd, setCwd] = useState((saved?.cwd as string) ?? "");
   // Native drafts may carry provider-specific configuration that is invalid
@@ -694,11 +788,56 @@ function OnboardingWizardInner({
   const [createdCompanyId, setCreatedCompanyId] = useState<string | null>(
     existingCompanyId ?? (saved?.createdCompanyId as string) ?? null
   );
+  /**
+   * The provider an AI connection may be created for on this step, if any.
+   *
+   * `aiProviderForAdapter` maps a harness to the provider it runs against, but
+   * that mapping is a claim about models, not about the harness. OpenCode is the
+   * case that shows it: the capability table pairs `opencode_local` with
+   * OpenRouter, which is true of `openrouter/*` models and false of every other
+   * provider OpenCode can route to. This step seeds a Zen model, so attaching
+   * the OpenRouter connection the map names would fail the hire outright — the
+   * server checks a binding against the agent's model, and OpenRouter requires
+   * an `openrouter/` one — while quietly filing the key under the wrong provider
+   * on the way there.
+   *
+   * So the mapping is asked a second question: does the model this step actually
+   * configured belong to the provider it names? When it does not, there is no
+   * managed provider, nothing binds, and the agent runs on whatever OpenCode
+   * already authenticates with on the host.
+   *
+   * Declared above `savedKeys` because it decides which saved options are
+   * offerable at all — see `offerableSavedKeys`.
+   */
+  const managedProvider = useMemo(() => {
+    const provider = aiProviderForAdapter(adapterType);
+    if (!provider) return undefined;
+    if (provider === "openrouter" && !model.trim().startsWith("openrouter/")) {
+      return undefined;
+    }
+    return provider;
+  }, [adapterType, model]);
   const savedKeys = useSavedProviderKeys(
     createdCompanyId,
     apiKeyEnvKeyFor(adapterType),
-    effectiveOnboardingOpen && step === 4,
+    // A quick-start run never reaches step 4, but its hire resolves credentials
+    // the same way and needs the same lookups.
+    effectiveOnboardingOpen && (step === 4 || autoHireQueuedFor !== null),
   );
+  /**
+   * The saved keys this step can actually put to work.
+   *
+   * A managed account and a stored secret are not the same kind of thing: the
+   * first is reachable only as an AI connection binding, the second only as an
+   * environment variable reference. With no managed provider for this model
+   * (see `managedProvider`) a managed account therefore has no route into the
+   * adapter at all, so it is dropped from the chooser rather than offered and
+   * then silently ignored — the same option appearing to do nothing is worse
+   * than its absence.
+   */
+  const offerableSavedKeys = managedProvider
+    ? savedKeys.options
+    : savedKeys.options.filter((option) => option.binding !== undefined);
   // The chooser is absent in onboarding. Prefer the user's explicit default;
   // otherwise only reuse an unambiguous account, regardless of list ordering.
   const savedSubscription = savedKeys.subscriptions.find((option) => option.aiConnection?.mode === "responsible_user")
@@ -706,11 +845,11 @@ function OnboardingWizardInner({
   const [selectedSavedKey, setSelectedSavedKey] = useState<{ companyId: string; envKey: string; id: string } | null>(null);
   const selectedApiKeyId = selectedSavedKey?.companyId === createdCompanyId && selectedSavedKey?.envKey === apiKeyEnvKeyFor(adapterType)
     ? selectedSavedKey.id
-    : savedKeys.options[0]?.id;
-  const selectedApiKey = savedKeys.options.find((option) => option.id === selectedApiKeyId);
+    : offerableSavedKeys[0]?.id;
+  const selectedApiKey = offerableSavedKeys.find((option) => option.id === selectedApiKeyId);
   const credentialMode = credentialModeChoice ?? (
     (savedKeys.subscriptions.length > 0 || (adapterType === "claude_local" && savedKeys.storedLogin.data))
-      ? "subscription" : savedKeys.options.length || adapterType === "opencode_local" ? "api" : "subscription"
+      ? "subscription" : offerableSavedKeys.length || adapterType === "opencode_local" ? "api" : "subscription"
   );
   const [createdCompanyPrefix, setCreatedCompanyPrefix] = useState<
     string | null
@@ -761,11 +900,25 @@ function OnboardingWizardInner({
    */
   const apiKeySecretRef = useRef<{ key: string; companyId: string; envKey: string; binding?: Awaited<ReturnType<typeof storeProviderApiKey>>["binding"]; aiConnection?: AiConnectionBinding } | null>(null);
   const managedSubscriptionRef = useRef<{ companyId: string; binding: AiConnectionBinding } | null>(null);
-  const managedProvider = aiProviderForAdapter(adapterType);
   function managedBindingForStep(): AiConnectionBinding | undefined {
-    if (credentialMode === "api") return selectedApiKey?.aiConnection ?? (
-      !selectedApiKey && apiKeySecretRef.current?.companyId === createdCompanyId && apiKeySecretRef.current.envKey === apiKeyEnvKeyFor(adapterType)
-        ? apiKeySecretRef.current.aiConnection : undefined);
+    // No managed provider for this model means no binding can be right for it
+    // (see `managedProvider`). Returning a saved account's binding here anyway
+    // would send a connection the server refuses, so this reports none and the
+    // hire runs credential-free rather than failing.
+    //
+    // Both modes are behind that gate, not just the API one. A subscription
+    // binding is unreachable for OpenCode today only because
+    // `AI_CONNECTION_CAPABILITIES.openrouter` declares no `subscription` method —
+    // a property of today's provider table rather than of this step, and the mode
+    // is restored from the draft before the adapter is, so a stale
+    // `credentialModeChoice` would otherwise pair a subscription with a source
+    // that cannot sign in.
+    if (!managedProvider) return undefined;
+    if (credentialMode === "api") {
+      return selectedApiKey?.aiConnection ?? (
+        !selectedApiKey && apiKeySecretRef.current?.companyId === createdCompanyId && apiKeySecretRef.current.envKey === apiKeyEnvKeyFor(adapterType)
+          ? apiKeySecretRef.current.aiConnection : undefined);
+    }
     return savedSubscription?.aiConnection ?? (managedSubscriptionRef.current?.companyId === createdCompanyId && managedSubscriptionRef.current.binding.provider === managedProvider ? managedSubscriptionRef.current.binding : undefined);
   }
   createdCompanyIdRef.current = createdCompanyId;
@@ -902,7 +1055,7 @@ function OnboardingWizardInner({
   useEffect(() => {
     if (!effectiveOnboardingOpen) return;
     const state = {
-      step, companyName,
+      step, companyName, advancedSetup,
       agentName, agentAppearance, agentRole, adapterType, cwd, model, command, args, url,
       // The mode, never the key: this blob is localStorage.
       credentialMode, credentialModeChoice,
@@ -911,7 +1064,7 @@ function OnboardingWizardInner({
     };
     onboardingDraftStorage.write(JSON.stringify(state));
   }, [
-    effectiveOnboardingOpen, step, companyName,
+    effectiveOnboardingOpen, step, companyName, advancedSetup,
     agentName, agentAppearance, agentRole, adapterType, cwd, model, command, args, url,
     credentialMode, credentialModeChoice,
     createdCompanyId, createdCompanyPrefix, createdAgentId,
@@ -930,8 +1083,15 @@ function OnboardingWizardInner({
       ? queryKeys.agents.adapterModels(createdCompanyId, adapterType, null)
       : ["agents", "none", "adapter-models", adapterType, null],
     queryFn: () => agentsApi.adapterModels(createdCompanyId!, adapterType, { environmentId: null }),
-    // Models are picked on step 4 (Connect a model).
-    enabled: Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 4
+    // Enabled wherever an OpenCode agent is in play, not only on the connect
+    // step: a quick-start hire seeds one from step 1 and never reaches step 4,
+    // and the hire validates the configured model against this list. Gating on
+    // `step === 4` alone left that run with an empty list and an "unavailable"
+    // error for a model it had just been given.
+    enabled:
+      Boolean(createdCompanyId) &&
+      effectiveOnboardingOpen &&
+      (step === 4 || adapterType === "opencode_local")
   });
   const getCapabilities = useAdapterCapabilities();
   const adapterCaps = getCapabilities(adapterType);
@@ -1384,7 +1544,11 @@ function OnboardingWizardInner({
                 label: "Connect",
                 icon: "arrow",
                 disabled:
-                  !connectStepReady || (credentialMode === "api" && !apiKey.trim() && !selectedApiKey),
+                  !connectStepReady ||
+                  (credentialMode === "api" &&
+                    !apiKeyOptionalFor(adapterType) &&
+                    !apiKey.trim() &&
+                    !selectedApiKey),
               }
           : // Nothing is chosen on arrival, and the row is what chooses. Until
             // it has been answered the button has nothing to do.
@@ -1498,7 +1662,7 @@ function OnboardingWizardInner({
     setSourcePicked(false);
     if (next === "codex_local") return;
     if (next === "opencode_local") {
-      setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
+      setModel(ONBOARDING_OPENCODE_MODEL);
       return;
     }
     if (next === "gemini_local") {
@@ -1644,6 +1808,17 @@ function OnboardingWizardInner({
     setCreatedCompanyGoalId(null);
     setCreatedProjectId(null);
     setCreatedIssueRef(null);
+    // Dropped. The wizard stays mounted while closed, so a queue left set here
+    // would still be waiting when the run reopened — and since `reset` also
+    // clears `createdCompanyId`, reopening onto the *same* company would satisfy
+    // the effect's own check and fire an agent hire the customer abandoned and
+    // never asked for. Two guards, and this is the one for the path a customer
+    // can actually walk.
+    setAutoHireQueuedFor(null);
+    // `advancedSetup` deliberately survives. It is an answer rather than
+    // progress, and the run it was given for is still the run in hand: reopening
+    // into the walk the customer chose is the opposite of resetting them into
+    // one they did not.
   }
 
   function handleClose() {
@@ -1828,7 +2003,7 @@ function OnboardingWizardInner({
           : adapterType === "cursor"
             ? model || DEFAULT_CURSOR_LOCAL_MODEL
             : adapterType === "opencode_local"
-              ? model || DEFAULT_OPENCODE_LOCAL_MODEL
+              ? model || ONBOARDING_OPENCODE_MODEL
               : model,
       command,
       args,
@@ -1867,13 +2042,22 @@ function OnboardingWizardInner({
     // present. If storing failed this stays false, and the right outcome is a
     // configuration with no credential — which the hire then blocks on — rather
     // than one that quietly falls back to embedding the value.
-    if (!managedBindingForStep() && credentialMode === "api" && (bindApiKey || selectedApiKey)) {
-      const env =
-        typeof config.env === "object" && config.env !== null && !Array.isArray(config.env)
-          ? { ...(config.env as Record<string, unknown>) }
-          : {};
-      env[apiKeyEnvKeyFor(adapterType)] = selectedApiKey?.binding ?? apiKeySecretRef.current?.binding;
-      config.env = env;
+    if (!managedBindingForStep() && credentialMode === "api") {
+      // Only a *binding* can be written as an environment reference. A saved
+      // managed account is not one — its credential lives inside the AI
+      // connection — so with no managed provider for this model it has nothing to
+      // contribute here. Writing `env[key] = undefined` instead would persist a
+      // key with no value behind it, which reads downstream as an override set
+      // to nothing rather than as absent.
+      const envKeyBinding = selectedApiKey?.binding ?? apiKeySecretRef.current?.binding;
+      if (bindApiKey || envKeyBinding) {
+        const env =
+          typeof config.env === "object" && config.env !== null && !Array.isArray(config.env)
+            ? { ...(config.env as Record<string, unknown>) }
+            : {};
+        env[apiKeyEnvKeyFor(adapterType)] = envKeyBinding;
+        config.env = env;
+      }
     }
     if (credentialMode === "subscription" && savedSubscription?.binding) {
       config.env = { ...((config.env as object) ?? {}), CODEX_HOME: savedSubscription.binding };
@@ -1970,15 +2154,24 @@ function OnboardingWizardInner({
     }
   }
 
-  // Step 1 → 3 ("Name your organization"): create the organization, then go
-  // straight to the first agent. There is no mission step between them anymore.
+  // Step 1 → 3 or → a queued hire ("Name your organization"): create the
+  // organization, then go straight to the first agent — either by asking for it
+  // or by hiring the default one. There is no mission step in between.
   //
   // No goal is written here: the mission is collected later, in the chat with
   // the first agent, so writing an empty one now would only give the
   // organization a goal it did not choose.
   async function handleCreateCompany() {
+    // Already holding one — a re-entry after Back, or a reload mid-run. The
+    // quick-start decision still applies, so this shares the path below rather
+    // than unconditionally walking to the naming step: otherwise the box on this
+    // screen says one thing and Continue does another.
     if (createdCompanyId) {
-      setStep(3);
+      if (advancedSetup) {
+        setStep(3);
+        return;
+      }
+      queueQuickStart(createdCompanyId);
       return;
     }
     if (creatingCompanyRef.current) return;
@@ -2002,7 +2195,11 @@ function OnboardingWizardInner({
       createdCompanyIdRef.current = company.id;
       setCreatedCompanyPrefix(company.issuePrefix);
       setSelectedCompanyId(company.id);
-      setStep(3);
+      if (advancedSetup) {
+        setStep(3);
+        return;
+      }
+      queueQuickStart(company.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create organization");
     } finally {
@@ -2011,6 +2208,98 @@ function OnboardingWizardInner({
     }
   }
 
+  /**
+   * Answer the two questions the short walk does not ask, and queue the hire.
+   *
+   * Separate from `handleCreateCompany` because the decision outlives it: the
+   * same thing happens when Continue is pressed again on a company already in
+   * hand, and having one definition of "what the short walk hires" is what keeps
+   * the box on step 1 and the walk behind it from disagreeing.
+   *
+   * Refuses, rather than substitutes, when its source is not one this instance
+   * offers. The snap effect would quietly replace a disabled adapter with
+   * whichever one is listed first, and the run would go on to hire that one
+   * instead — answering a question the customer never saw with an answer they
+   * never chose. Falling through to the walk keeps the decision theirs.
+   */
+  function queueQuickStart(companyId: string) {
+    // The same three things the snap effect requires of a source it will keep:
+    // registered, not disabled, and not held back from visual selection. All
+    // three, because `queueQuickStart` is what puts this adapter into the step's
+    // state — a source the snap would replace on the next tick cannot be one a
+    // queued hire is committed to.
+    const sourceIsOffered =
+      adapterRegistryLoaded &&
+      !disabledTypes.has(QUICK_START_ADAPTER) &&
+      isVisualAdapterChoice(QUICK_START_ADAPTER) &&
+      !getAdapterDisplay(QUICK_START_ADAPTER).comingSoon;
+    if (!sourceIsOffered) {
+      setError(
+        "OpenCode is not available on this instance. Continue to choose an agent and a model yourself.",
+      );
+      setStep(3);
+      return;
+    }
+    // The default walk. Naming the agent and connecting a model are two
+    // questions, and a customer who answered one field has not come here to
+    // answer two more — so this run answers them with the defaults the rest of
+    // onboarding is built around: the first agent, the CEO role, and the one
+    // source whose default model needs no credential.
+    //
+    // Not a decision the review step takes back: it shows the agent and that it
+    // is ready, so the model and role are found in the agent's own settings,
+    // which is where a choice worth changing belongs anyway. That is the trade
+    // this makes — two unasked questions for a run that finishes in one step.
+    setAgentName(QUICK_START_AGENT_NAME);
+    setAgentRole(QUICK_START_AGENT_ROLE);
+    setAdapterType(QUICK_START_ADAPTER);
+    setModel(ONBOARDING_OPENCODE_MODEL);
+    // Recorded as chosen even though no tile was pressed, so a customer who
+    // steps back to the connect step sees the source that was picked for them
+    // rather than an unanswered row over a card that should be open.
+    setSourcePicked(true);
+    setAutoHireQueuedFor(companyId);
+  }
+
+
+  /**
+   * Run a queued quick-start hire, once the company it was queued for exists.
+   *
+   * Waits on the OpenCode model list first. The hire refuses a model the host
+   * cannot see, so firing it while that list is still loading would fail the run
+   * with "still loading, please try again" for a model this wizard itself chose
+   * — the one case where that error is guaranteed to be premature.
+   *
+   * The company check is the one that matters. Between queueing and running, a
+   * route can adopt a different company, and `reset` can run without unmounting
+   * the wizard; either way the id in state is no longer the one this hire was
+   * asked for, and firing anyway would create an agent nobody asked for. Refusing
+   * is silent because the queue is an implementation detail — the customer sees
+   * whichever walk the rest of the wizard is on.
+   *
+   * `loading` is held across the wait so step 1's Continue is not live for the
+   * seconds the model list takes. Without it a second press starts a second
+   * walk while the first is mid-flight.
+   */
+useEffect(() => {
+    if (!autoHireQueuedFor) return;
+    // The company check, and the reason the queue holds an id rather than a
+    // flag. Adopting a company from the route clears the company-scoped state
+    // but not this, so without the comparison the effect — which re-runs on the
+    // new `createdCompanyId` — would hire the agent this queue was for into
+    // whichever company arrived next.
+    if (createdCompanyId !== autoHireQueuedFor) return;
+    if (adapterType === QUICK_START_ADAPTER && (adapterModelsLoading || adapterModelsFetching)) {
+      setLoading(true);
+      return;
+    }
+    setAutoHireQueuedFor(null);
+    setLoading(true);
+    void handleGiveHeartbeat();
+  }, [
+    autoHireQueuedFor, createdCompanyId, adapterType,
+    adapterModelsLoading, adapterModelsFetching,
+  ]);
 
   // Step 4 → 5 ("Give it a heartbeat"): hire the lead agent + seed its
   // instructions, then advance to Review. Guarded so revisiting step 4
@@ -2064,8 +2353,8 @@ function OnboardingWizardInner({
         if (!discoveredModels.some((entry) => entry.id === selectedModelId)) {
           setError(
             discoveredModels.length === 0
-              ? "No OpenCode models discovered. Run `opencode models` and authenticate providers."
-              : `Configured OpenCode model is unavailable: ${selectedModelId}`
+              ? `OpenCode returned no models. Install the OpenCode CLI and run \`opencode models\` to see what it can reach.`
+              : `Configured OpenCode model is unavailable: ${selectedModelId}. Run \`opencode models\` to see what this machine can reach.`
           );
           return;
         }
@@ -2342,8 +2631,18 @@ function OnboardingWizardInner({
   // always `step - 1`. The run goes 1 → 3 (there is no mission step 2 between
   // naming the organization and naming the agent), so the agent step walks
   // back to step 1 rather than to a screen the customer never saw.
+  //
+  // The quick-start run went 1 → 5, so its review walks back to step 1 for the
+  // same reason. Landing on the connect step instead would show a tile row this
+  // customer never saw and never answered, which is the dead end that step's own
+  // gate exists to prevent.
+  //
+  // `quickStartWalk`, not `!advancedSetup` on its own: a run that entered on the
+  // agent arc never saw the box, so its default is unticked and it must keep
+  // walking back through its own steps.
   function backStepFrom(current: Step): Step {
     if (current === 3) return 1;
+    if (current === 5 && quickStartWalk) return 1;
     return (current - 1) as Step;
   }
 
@@ -2363,6 +2662,22 @@ function OnboardingWizardInner({
    */
   const enteredFromCloud = experimentalSettingsForLogin?.enableManagedSandboxOnly === true;
   const showsAgentArcStepper = isAgentArcStep && entryStep >= 3 && !enteredFromCloud;
+  /**
+   * Whether this run skipped the two questions the short walk answers for it.
+   *
+   * Drives the progress strip, which is otherwise drawn from the full walk's
+   * four steps and would light two segments for questions this run never asked —
+   * and whose back-jumps would land on them.
+   *
+   * `advancedSetup` rather than "has a hire been queued": the run *is* the short
+   * walk from the moment the box was left unticked, including the stretch before
+   * Continue, so a strip that changed shape when the hire fired would jump under
+   * the customer on step 1.
+   *
+   * Not the arc's business. A run that entered at the agent step has its own
+   * three-segment strip and never saw the box, so it has no short walk to be on.
+   */
+  const quickStartWalk = !advancedSetup && entryStep <= 1;
 
   const launchStateIncomplete = step === 5 && (!createdCompanyId || !createdAgentId);
   /**
@@ -2457,18 +2772,33 @@ function OnboardingWizardInner({
                   count would visibly skip from 1 to 3. */}
               {!showsAgentArcStepper && (
                 <Stepper
-                  step={onboardingStepPositionFor(step)}
-                  total={ONBOARDING_WIZARD_STEPS.length}
-                  labels={ONBOARDING_STEP_LABELS}
+                  step={
+                    quickStartWalk
+                      ? quickStartStepPositionFor(step)
+                      : onboardingStepPositionFor(step)
+                  }
+                  total={quickStartWalk ? QUICK_START_STEP_COUNT : ONBOARDING_WIZARD_STEPS.length}
+                  labels={quickStartWalk ? QUICK_START_STEP_LABELS : ONBOARDING_STEP_LABELS}
                   canJumpToStep={(target) =>
-                    canJumpToOnboardingStep({
-                      targetStep: ONBOARDING_WIZARD_STEPS[target - 1]!,
-                      currentStep: step,
-                      entryStep,
-                    })
+                    // Never back into a question this run did not ask. A
+                    // quick-start run's strip is two segments long, so the
+                    // back-jump bound alone would still let it reach the naming
+                    // and connect steps by their old positions — landing on a
+                    // tile row it never saw, over an agent already hired.
+                    quickStartWalk
+                      ? target === 1
+                      : canJumpToOnboardingStep({
+                        targetStep: ONBOARDING_WIZARD_STEPS[target - 1]!,
+                        currentStep: step,
+                        entryStep,
+                      })
                   }
                   onJumpToStep={(target) =>
-                    setStep(ONBOARDING_WIZARD_STEPS[target - 1]! as Step)
+                    setStep(
+                      (quickStartWalk
+                        ? QUICK_START_WIZARD_STEPS[target - 1]!
+                        : ONBOARDING_WIZARD_STEPS[target - 1]!) as Step,
+                    )
                   }
                 />
               )}
@@ -2618,6 +2948,42 @@ function OnboardingWizardInner({
                       autoFocus
                     />
                   </div>
+                  {/*
+                    The whole of what this step is deciding, stated on the step
+                    itself. Unchecked — the default — the run hires a default CEO
+                    on a default model that needs no credential, so a customer
+                    who came to type a name is done in one step. Ticking it asks
+                    for the two questions that defaults are answering, which is
+                    the only thing that makes them answerable.
+
+                    Not a disclosure hiding fields that are already on later
+                    steps: nothing on this screen changes when it is ticked. It
+                    is a choice about the walk, so it is a checkbox and not an
+                    expander.
+                  */}
+                  <label className="flex cursor-pointer items-start gap-2.5">
+                    {/* No `id`/`htmlFor` pair: the label *wraps* the control,
+                        which associates them on its own, and an id nothing
+                        points at would be a hook with no user. */}
+                    <Checkbox
+                      className="mt-0.5"
+                      checked={advancedSetup}
+                      onCheckedChange={(checked) => setAdvancedSetup(checked === true)}
+                    />
+                    {/* The title and what it will cost both live inside the
+                        label, so the second line indents to the first without
+                        a spacer width this design system has no token for. */}
+                    <span className="flex flex-col gap-1">
+                      <span className="text-sm font-medium text-foreground">
+                        Advanced setup
+                      </span>
+                      <span className="text-sm text-muted-foreground">
+                        {advancedSetup
+                          ? "You will name your first agent and choose its model."
+                          : `We will hire a CEO named ${QUICK_START_AGENT_NAME}, running OpenCode on a free model. No API key needed — OpenCode has to be installed on this machine.`}
+                      </span>
+                    </span>
+                  </label>
                 </motion.div>
               )}
 
@@ -2691,7 +3057,7 @@ function OnboardingWizardInner({
                         autoConnectStartedRef.current = false;
                         setSourcePicked(true);
                         setAdapterType(id);
-                        if (id === "opencode_local") setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
+                        if (id === "opencode_local") setModel(ONBOARDING_OPENCODE_MODEL);
                         else if (id !== "codex_local") setModel("");
                         setConnectPhase("collapsing");
                       }}
@@ -2720,8 +3086,14 @@ function OnboardingWizardInner({
                       transition={{ opacity: SOURCE_LINK_EXIT, height: MAKE_ROOM }}
                     >
                       <div className="-ml-3 mt-1">
-                        <CredentialModeLink mode={credentialMode} onChange={setCredentialMode} />
-                        {savedKeys.options.length > 0 && <p className="px-3 text-sm text-muted-foreground">{savedKeys.options.length} saved API {savedKeys.options.length === 1 ? "key available" : "keys available"}.</p>}
+                        {/* The link is only offered where there is a
+                            subscription to switch to. OpenCode's key is
+                            optional, and OpenCode has no subscription sign-in
+                            at all — offering the switch would replace a field
+                            reading "(optional)" with a card telling the
+                            customer to connect with an API key. */}
+                        {!apiKeyOptionalFor(adapterType) && <CredentialModeLink mode={credentialMode} onChange={setCredentialMode} />}
+                        {offerableSavedKeys.length > 0 && <p className="px-3 text-sm text-muted-foreground">{offerableSavedKeys.length} saved API {offerableSavedKeys.length === 1 ? "key available" : "keys available"}.</p>}
                         {credentialMode === "subscription" && authSignalStatus === "present" && <p className="px-3 text-sm text-muted-foreground">An existing provider connection is available.</p>}
                       </div>
                     </motion.div>
@@ -2770,22 +3142,31 @@ function OnboardingWizardInner({
                       </p>
                     ) : credentialMode === "api" ? (
                       <OnboardingLoginCard
-                        instruction={savedKeys.options.length ? "Choose a saved API key or enter a new one" : `Provide your ${
-                          CONNECT_SOURCE_NAMES[adapterType] ?? adapterType
-                        } API key to connect`}
+                        instruction={offerableSavedKeys.length
+                          ? "Choose a saved API key or enter a new one"
+                          : apiKeyOptionalFor(adapterType)
+                            ? "Optional. OpenCode runs the agent on a free OpenCode Zen model without a key — add one only if you plan to use a paid or OpenRouter model."
+                            : `Provide your ${
+                                CONNECT_SOURCE_NAMES[adapterType] ?? adapterType
+                              } API key to connect`}
                       >
-                        <SavedProviderKeySelect {...savedKeys} disabled={loading || adapterEnvLoading} value={selectedApiKey?.id ?? ""} onChange={(id) => {
+                        <SavedProviderKeySelect {...savedKeys} options={offerableSavedKeys} disabled={loading || adapterEnvLoading} value={selectedApiKey?.id ?? ""} onChange={(id) => {
                           setSelectedSavedKey(createdCompanyId ? { companyId: createdCompanyId, envKey: apiKeyEnvKeyFor(adapterType), id } : null);
                           setApiKey("");
                         }} />
                         {!selectedApiKey && <OnboardingCardField
-                          label="API key"
+                          label={apiKeyOptionalFor(adapterType) ? "API key (optional)" : "API key"}
                           placeholder="Enter API key here"
                           masked
                           // The card is the answer to the tile just pressed, so
                           // the field is unambiguously the next thing. Carried
                           // over from the key field this card replaced.
-                          autoFocus
+                          //
+                          // Not when the key is optional: the card then exists
+                          // to say so, and taking the caret to a field nobody
+                          // has to fill moves the next action off the button
+                          // that is.
+                          autoFocus={!apiKeyOptionalFor(adapterType)}
                           value={apiKey}
                           onChange={(value) => {
                             setSelectedSavedKey(createdCompanyId ? { companyId: createdCompanyId, envKey: apiKeyEnvKeyFor(adapterType), id: "" } : null);

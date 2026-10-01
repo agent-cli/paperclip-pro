@@ -6,6 +6,7 @@ import { Checkbox } from "../ui/checkbox";
 import { AgentPreview } from "./AgentPreview";
 import { CredentialModeLink } from "./CredentialModeLink";
 import { FooterNav } from "./FooterNav";
+import { OpenCodeLogoIcon } from "../OpenCodeLogoIcon";
 import {
   ModelSourceTiles,
   type CredentialMode,
@@ -20,12 +21,12 @@ import { Stepper } from "./Stepper";
  * A prototype of the connect step, from the PCLP-Onboarding file (nodes
  * 2941:8291 and 2933:4592).
  *
- * A mock, not the shipped step. The wizard's real step 4 puts two adapter cards
- * over an advanced-settings disclosure and probes the environment before
- * hiring; none of that is wired up here. What is here is the part the design is
- * actually asking a question about — how the row of sources reads as you point
- * at it, pick one, and flip the whole row between subscription and API
- * credentials — so it can be judged before any of that machinery is moved.
+ * A mock, not the shipped step. The wizard's real step 4 probes the environment
+ * before hiring and gates the key on the source; none of that is wired up here.
+ * What is here is the part the design is actually asking a question about — how
+ * the row of sources reads as you point at it, pick one, and flip the whole row
+ * between subscription and API credentials — so it can be judged before any of
+ * that machinery is moved.
  *
  * It lives in `components/` rather than beside a story because two surfaces
  * render it: the Storybook stories, and the standalone
@@ -37,12 +38,25 @@ import { Stepper } from "./Stepper";
  */
 
 /**
- * The two sources the step offers, matching the shipped step's own list.
+ * The sources the prototype offers, matching the shipped step's own list.
  *
- * Claude Code and Codex are the only adapters the display registry marks
- * `recommended`, and the real step builds its row from exactly that filter — so
- * a third tile here would be a design the wizard could never render. OpenCode
- * was drawn at one point and is deliberately gone.
+ * Written out rather than read from the display registry: this file renders in
+ * Storybook and in a standalone `connect-model-preview.html` entry with no app
+ * providers around it. `getAdapterDisplay` would work — it is a static table —
+ * but pulling one adapter's entry out of it here would couple a design
+ * prototype to the app's adapter registry to draw three boxes, and the next
+ * adapter would mean editing a module this file deliberately does not reach for.
+ *
+ * The convention is therefore a manual one, and this note is what it is: keep it
+ * equal to the adapters `adapter-display-registry.ts` marks `recommended`,
+ * because the shipped step's row is built from exactly that filter and a source
+ * here that is not `recommended` is a tile the wizard could never render.
+ *
+ * Nothing enforces the two halves agree — `adapter-display-registry.test.ts`
+ * pins the registry's set, and this list is not read by it — so adding a tile
+ * here is a second, separate edit. A prototype that drew a tile the product had
+ * withdrawn is the failure this convention is here to prevent, and it is caught
+ * by reading both, not by a test.
  */
 const MODEL_SOURCES: ModelSource[] = [
   {
@@ -54,6 +68,11 @@ const MODEL_SOURCES: ModelSource[] = [
     id: "codex_local",
     label: "Codex",
     icon: <img src="/brands/codex-color.svg" alt="" className="size-full" />,
+  },
+  {
+    id: "opencode_local",
+    label: "OpenCode",
+    icon: <OpenCodeLogoIcon className="size-full" />,
   },
 ];
 

@@ -42,6 +42,21 @@ export const ONBOARDING_STEP_LABELS = [
 ] as const;
 
 /**
+ * The short walk: name the organization, then review. Two segments, because the
+ * run asks no other question — the agent and its model were answered for it, so
+ * a strip drawn from the full walk would assert progress through two steps it
+ * never showed, and its back-jumps would land on them.
+ */
+export const QUICK_START_WIZARD_STEPS = [1, 5] as const;
+
+export const QUICK_START_STEP_COUNT = QUICK_START_WIZARD_STEPS.length;
+
+export const QUICK_START_STEP_LABELS = [
+  "Name your organization",
+  "Review",
+] as const;
+
+/**
  * Position in the full walk: how many of its steps are at or behind `step`.
  *
  * Counted rather than indexed because the wizard visits steps the strip does
@@ -52,6 +67,17 @@ export const ONBOARDING_STEP_LABELS = [
  */
 export function onboardingStepPositionFor(step: number): number {
   return ONBOARDING_WIZARD_STEPS.filter((entry) => entry <= step).length;
+}
+
+/**
+ * Position in the short walk: the same count over its own two steps.
+ *
+ * Its own function rather than the full walk's, because the short walk has a
+ * different length. Sharing the one would report "4 of 2" on the review step —
+ * every dot lit on a strip that has two.
+ */
+export function quickStartStepPositionFor(step: number): number {
+  return QUICK_START_WIZARD_STEPS.filter((entry) => entry <= step).length;
 }
 
 /**

@@ -116,6 +116,27 @@ function setControlledValue(el: HTMLTextAreaElement | HTMLInputElement, value: s
   el.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
+/**
+ * Tick step 1's "Advanced setup" box, so Continue lands on the agent step.
+ *
+ * Unticked is the short walk now — one field, then a default CEO is hired and
+ * the run lands on the review step. The tests here that drive step 1's Continue
+ * are about which step a run lands on for a route reason and assert the agent
+ * step, so the long walk is the one they have to be on.
+ *
+ * No settle of its own: `settle` is a per-test binding here, and the `act` below
+ * is what puts the new value on screen.
+ */
+async function tickAdvancedSetup(): Promise<void> {
+  const box = document.body.querySelector(
+    'button[role="checkbox"], input[type="checkbox"]',
+  ) as HTMLElement | null;
+  expect(box, "step 1 should offer the advanced-setup choice").toBeTruthy();
+  await act(async () => {
+    box!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+}
+
 const COMPANY_GOAL = {
   id: "goal-1",
   companyId: "company-1",
@@ -375,6 +396,7 @@ describe("OnboardingWizard — which step it lands on", () => {
     const nameInput = document.body.querySelector("input")! as HTMLInputElement;
     setControlledValue(nameInput, "Acme");
     await settle();
+    await tickAdvancedSetup();
     await act(async () => {
       [...document.body.querySelectorAll("button")]
         .find((b) => b.textContent?.trim() === "Continue")!
@@ -419,6 +441,7 @@ describe("OnboardingWizard — which step it lands on", () => {
     const nameInput = document.body.querySelector("input")! as HTMLInputElement;
     setControlledValue(nameInput, "Initech");
     await settle();
+    await tickAdvancedSetup();
     const next = [...document.body.querySelectorAll("button")].find(
       (b) => b.textContent?.trim() === "Continue",
     )!;
@@ -468,6 +491,7 @@ describe("OnboardingWizard — which step it lands on", () => {
     const nameInput = document.body.querySelector("input")! as HTMLInputElement;
     setControlledValue(nameInput, "Initech");
     await settle();
+    await tickAdvancedSetup();
     const next = [...document.body.querySelectorAll("button")].find(
       (button) => button.textContent?.trim() === "Continue",
     )!;
@@ -488,6 +512,67 @@ describe("OnboardingWizard — which step it lands on", () => {
     expect(currentStep()).toBe("agent");
     expect(companyState.setSelectedCompanyId).toHaveBeenCalledWith("company-created");
     expect(mockCompaniesApi.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not spend a queued quick-start hire on a company the route swapped in", async () => {
+    // The short walk queues its hire rather than reaching for a company id the
+    // create response has not returned yet. The queue therefore outlives the step
+    // that set it, and the wizard stays mounted throughout — so the route can
+    // hand it a *different* company in the meantime.
+    //
+    // Nothing here is slow by accident. Adopting a company clears the state that
+    // describes the old one but not the queue, and `clearCompanyScopedState`
+    // deliberately leaves the agent, adapter and model alone. So without the
+    // queue's own company check the effect re-runs on the new `createdCompanyId`,
+    // finds its model list already resolved, and hires the agent this queue was
+    // for into a company the customer was navigating away from.
+    mockAdaptersApi.list.mockResolvedValue([{ type: "opencode_local" }]);
+    const ZEN_MODEL = "opencode/space-bunny-free";
+    // The queue's company: the first model list never comes back, which is what
+    // holds the queue while the route changes underneath it.
+    mockAgentsApi.adapterModels
+      .mockReturnValueOnce(new Promise<Array<{ id: string; label: string }>>(() => {}))
+      .mockResolvedValue([{ id: ZEN_MODEL, label: ZEN_MODEL }]);
+    mockCompaniesApi.create.mockResolvedValue({
+      id: "company-created",
+      issuePrefix: "CRE",
+    });
+
+    routerState.pathname = "/onboarding";
+    await render();
+    await settle();
+
+    // The short walk: the box left unticked.
+    const nameInput = document.body.querySelector("input")! as HTMLInputElement;
+    setControlledValue(nameInput, "Initech");
+    await settle();
+    await act(async () => {
+      [...document.body.querySelectorAll("button")]
+        .find((b) => b.textContent?.trim() === "Continue")!
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await settle();
+    expect(mockCompaniesApi.create).toHaveBeenCalledTimes(1);
+    // Held on the model list, so the queue is still waiting.
+    expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+
+    // The route names a company the queue was not made for.
+    routerState.pathname = "/PC1/onboarding";
+    await rerender();
+    await settle();
+
+    // The swap took: the wizard now holds the routed company, and its model list
+    // has answered. Everything the hire needs is ready — only the queue's own
+    // identity check stands in its way.
+    expect(mockAgentsApi.adapterModels).toHaveBeenCalledWith(
+      "company-1",
+      "opencode_local",
+      expect.anything(),
+    );
+    expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+
+    await act(async () => root!.unmount());
+    root = null;
   });
 
   it("applies the step again when the wizard is re-opened", async () => {

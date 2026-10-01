@@ -193,12 +193,15 @@ vi.mock("../adapters/metadata", () => ({ isVisualAdapterChoice: () => true }));
 vi.mock("../adapters/adapter-display-registry", () => ({
   getAdapterDisplay: (type: string) => ({
     type,
-    // Mirrors the real registry, where these two and only these two are
+    // Mirrors the real registry, where these three and only these three are
     // `recommended`. A blanket `false` used to be harmless because every adapter
     // then sat in the "Advanced settings" disclosure and was reachable anyway;
     // with the step down to a tile row built from this flag, it made that row
     // empty in every test and hid the surface under it.
-    recommended: type === "claude_local" || type === "codex_local",
+    recommended:
+      type === "claude_local" ||
+      type === "codex_local" ||
+      type === "opencode_local",
     label: type,
     description: "",
     icon: () => null,
@@ -308,6 +311,29 @@ async function pickFirstSource(
 }
 
 /**
+ * Tick step 1's "Advanced setup" box, on the way to the naming and connect steps.
+ *
+ * Every test about the long walk needs it, because unticked is now the short one
+ * — step 1 hires a default CEO and never shows the steps those tests are about.
+ * Asserted unticked on the way in, so a test that meant to exercise the short
+ * walk cannot reach here by accident.
+ */
+async function tickAdvancedSetup(): Promise<void> {
+  const box = document.body.querySelector(
+    'button[role="checkbox"], input[type="checkbox"]',
+  ) as HTMLElement | null;
+  expect(box, "step 1 should offer the advanced-setup choice").toBeTruthy();
+  expect(
+    box!.getAttribute("data-state"),
+    "the box should start unticked, since the short walk is the default",
+  ).not.toBe("checked");
+  await act(async () => {
+    box!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushReact();
+}
+
+/**
  * The arc footer's primary button, whatever this step calls it.
  *
  * Step 4 calls it "Connect", because there it starts a sign-in rather than
@@ -404,7 +430,10 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     async function openStepOne() {
       window.localStorage.setItem(
         ONBOARDING_STORAGE_KEY,
-        JSON.stringify({ step: 1, companyName: "Initech" }),
+        // `advancedSetup: true` because this describe is about the walk that
+        // names an agent. Untick it and step 1 hires a default CEO instead —
+        // the short walk, covered by its own describe below.
+        JSON.stringify({ step: 1, companyName: "Initech", advancedSetup: true }),
       );
       mockDialog.onboardingOptions = {};
       mockCompany.companies = [];
@@ -546,6 +575,9 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         });
         await flushReact();
       }
+      // No draft here, so the wizard opens on the name step itself — and the
+      // short walk is the default, so the long walk has to be asked for.
+      await tickAdvancedSetup();
       await clickText((t) => t.startsWith("Continue"));
       const agentField = document.body.querySelector(
         "#onboarding-agent-name",
@@ -573,7 +605,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       // through a restored draft instead of a fresh one.
       window.localStorage.setItem(
         ONBOARDING_STORAGE_KEY,
-        JSON.stringify({ step: 1, companyName: "Initech", agentRole: "" }),
+        JSON.stringify({ step: 1, companyName: "Initech", agentRole: "", advancedSetup: true }),
       );
       mockDialog.onboardingOptions = {};
       mockCompany.companies = [];
@@ -758,7 +790,9 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       mockCompaniesApi.create.mockResolvedValue({ id: "company-new", issuePrefix: "INI" });
       window.localStorage.setItem(
         ONBOARDING_STORAGE_KEY,
-        JSON.stringify({ step: 1, companyName: "Initech" }),
+        // The advanced walk, as above: this helper's callers are all about what
+        // happens after a source has been chosen on step 4.
+        JSON.stringify({ step: 1, companyName: "Initech", advancedSetup: true }),
       );
       mockDialog.onboardingOptions = {};
       mockCompany.companies = [];
@@ -974,6 +1008,448 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         await clickByText((t) => isArcPrimary(t));
 
         expect(managedApi.create).toHaveBeenCalledTimes(1);
+
+        await act(async () => root.unmount());
+      });
+    });
+
+    describe("OpenCode as a first-run source", () => {
+      // Onboarding hires OpenCode on a Zen free model rather than the adapter's
+      // own paid default, and Zen serves that model with no credential. Both
+      // halves are load-bearing for a first-run customer: the model is the one
+      // that works without a key, and the key being optional is what makes
+      // OpenCode the only source this step can finish hands-off.
+      const ZEN_MODEL = "opencode/space-bunny-free";
+
+      beforeEach(() => {
+        mockAdapterRegistry.list = [
+          { type: "claude_local" },
+          { type: "codex_local" },
+          { type: "opencode_local" },
+        ];
+        mockAgentsApi.adapterModels.mockResolvedValue([
+          { id: ZEN_MODEL, label: ZEN_MODEL },
+          { id: "openrouter/openai/gpt-5.2", label: "openrouter/openai/gpt-5.2" },
+        ]);
+        mockAgentsApi.testEnvironment.mockResolvedValue({
+          adapterType: "opencode_local",
+          status: "pass" as const,
+          checks: [],
+          testedAt: new Date().toISOString(),
+        });
+        mockSecretsApi.listMyUserSecrets.mockResolvedValue([]);
+      });
+
+      /** Walk the arc to the connect step and press the OpenCode tile. */
+      async function openOnOpenCode() {
+        mockCompaniesApi.create.mockResolvedValue({ id: "company-new", issuePrefix: "INI" });
+        window.localStorage.setItem(
+          ONBOARDING_STORAGE_KEY,
+          // The advanced walk again: these cases are about the OpenCode tile on
+          // step 4, which the short walk never reaches.
+          JSON.stringify({ step: 1, companyName: "Initech", advancedSetup: true }),
+        );
+        mockDialog.onboardingOptions = {};
+        mockCompany.companies = [];
+        mockCompany.loading = false;
+        mockCompaniesApi.list.mockResolvedValue([]);
+
+        const { root, queryClient } = render();
+        await act(async () => {
+          root.render(
+            <QueryClientProvider client={queryClient}>
+              <OnboardingWizard />
+            </QueryClientProvider>,
+          );
+        });
+        await flushReact();
+
+        const clickByText = async (match: (text: string) => boolean) => {
+          const el = [...document.body.querySelectorAll("button")].find((b) =>
+            match(b.textContent?.trim() ?? ""),
+          )!;
+          await act(async () => {
+            el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+          });
+          await flushReact();
+        };
+
+        await clickByText((t) => t.startsWith("Continue"));
+        const agentField = document.body.querySelector(
+          "#onboarding-agent-name",
+        ) as HTMLInputElement;
+        await act(async () => {
+          setControlledValue(agentField, "Ada");
+        });
+        await flushReact();
+        await clickByText((t) => isArcPrimary(t));
+        expect(document.body.textContent).toContain("Connect a model");
+
+        // Read off the row, by the name it shows. The tile is the only way onto
+        // this source now that the "Advanced settings" disclosure is gone, so a
+        // row that stopped offering it is the whole defect.
+        const tile = [...document.body.querySelectorAll("button[aria-checked]")].find(
+          (t) => (t.textContent ?? "").startsWith("OpenCode"),
+        );
+        expect(tile, "OpenCode should be offered as a source").toBeTruthy();
+        await act(async () => {
+          tile!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        });
+        for (let i = 0; i < 10; i++) await flushReact();
+
+        return { root, clickByText };
+      }
+
+      function arcPrimary() {
+        const cta = [...document.body.querySelectorAll("button")].find((b) =>
+          isArcPrimary(b.textContent?.trim() ?? ""),
+        );
+        expect(cta, "the step should render its forward button").toBeTruthy();
+        return cta!;
+      }
+
+      it("hires the Zen model with no key typed", async () => {
+        const { root } = await openOnOpenCode();
+
+        // Offered, and offered as optional — the field exists for someone
+        // bringing an OpenRouter key, not as the thing standing between them
+        // and a working agent.
+        expect(
+          document.body.querySelector('input[aria-label="API key (optional)"]'),
+          "the key field should be offered and marked optional",
+        ).toBeTruthy();
+
+        const cta = arcPrimary();
+        expect(
+          cta.hasAttribute("disabled"),
+          "Connect must not require a key from a source whose default model needs none",
+        ).toBe(false);
+
+        await act(async () => {
+          cta.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        });
+        for (let i = 0; i < 8; i++) await flushReact();
+
+        expect(mockAgentsApi.hire).toHaveBeenCalledTimes(1);
+        const hireBody = (mockAgentsApi.hire.mock.calls.at(-1) as unknown[])[1] as {
+          adapterType: string;
+          runtimeConfig: { aiConnection?: unknown };
+        };
+        expect(hireBody.adapterType).toBe("opencode_local");
+        // Read at the boundary rather than off the hire: the adapter's own
+        // `buildAdapterConfig` is stubbed here, so what this step decided is only
+        // visible in what it handed the adapter. A paid `openai/*` model getting
+        // through would put the key back on the critical path.
+        expect(mockAdapterBuild.buildAdapterConfig).toHaveBeenCalledWith(
+          expect.objectContaining({ adapterType: "opencode_local", model: ZEN_MODEL }),
+        );
+        // No AI connection, because there is no credential to bind. The
+        // provider table pairs this adapter with OpenRouter and the server checks
+        // a binding against the agent's model, which requires an `openrouter/`
+        // one — a Zen model with an OpenRouter binding is refused at the hire.
+        expect(hireBody.runtimeConfig.aiConnection).toBeUndefined();
+        expect(managedApi.create).not.toHaveBeenCalled();
+
+        await act(async () => root.unmount());
+      });
+
+      it("stores a typed key as a plain OpenRouter secret rather than a managed connection", async () => {
+        mockSecretsApi.createUserSecretDefinition.mockResolvedValue({ id: "def-1" });
+        mockSecretsApi.createMyUserSecret.mockResolvedValue({ id: "secret-abc" });
+
+        const { root } = await openOnOpenCode();
+        const field = document.body.querySelector(
+          'input[aria-label="API key (optional)"]',
+        ) as HTMLInputElement;
+        await act(async () => {
+          setControlledValue(field, "sk-or-typed-by-the-customer");
+        });
+        await flushReact();
+
+        const cta = arcPrimary();
+        await act(async () => {
+          cta.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        });
+        for (let i = 0; i < 8; i++) await flushReact();
+
+        // The plain path, not the managed one. `OPENROUTER_API_KEY` is the
+        // variable OpenCode's OpenRouter provider reads, and it is what the
+        // capability table already pairs with this adapter; the generic
+        // `API_KEY` the wizard fell through to before is not a variable OpenCode
+        // reads at all, so a key pasted here could not have worked.
+        expect(managedApi.create).not.toHaveBeenCalled();
+        expect(mockSecretsApi.createUserSecretDefinition).toHaveBeenCalledWith(
+          "company-new",
+          expect.objectContaining({ key: expect.stringMatching(/^OPENROUTER_API_KEY\.setup\./) }),
+        );
+
+        const hireBody = (mockAgentsApi.hire.mock.calls.at(-1) as unknown[])[1] as {
+          adapterConfig: { env?: Record<string, unknown> };
+          runtimeConfig: { aiConnection?: unknown };
+        };
+        expect(hireBody.runtimeConfig.aiConnection).toBeUndefined();
+        expect(hireBody.adapterConfig.env?.OPENROUTER_API_KEY).toMatchObject({
+          type: "user_secret_ref",
+        });
+        // A reference, never the value: the configuration is persisted and
+        // revisioned.
+        expect(JSON.stringify(hireBody)).not.toContain("sk-or-typed-by-the-customer");
+
+        await act(async () => root.unmount());
+      });
+    });
+
+    describe("quick start (advanced setup left unticked)", () => {
+      // Step 1 offers one question. Answering it and answering three more is a
+      // different walk, so the box under the field says which one is being
+      // taken — and unticked is the short one, which hires a default CEO on the
+      // one source whose default model needs no credential.
+      const ZEN_MODEL = "opencode/space-bunny-free";
+
+      beforeEach(() => {
+        mockAdapterRegistry.list = [
+          { type: "claude_local" },
+          { type: "codex_local" },
+          { type: "opencode_local" },
+        ];
+        mockCompaniesApi.create.mockResolvedValue({ id: "company-new", issuePrefix: "INI" });
+        mockAgentsApi.adapterModels.mockResolvedValue([
+          { id: ZEN_MODEL, label: ZEN_MODEL },
+        ]);
+        mockAgentsApi.testEnvironment.mockResolvedValue({
+          adapterType: "opencode_local",
+          status: "pass" as const,
+          checks: [],
+          testedAt: new Date().toISOString(),
+        });
+        window.localStorage.setItem(
+          ONBOARDING_STORAGE_KEY,
+          JSON.stringify({ step: 1, companyName: "" }),
+        );
+        mockDialog.onboardingOptions = {};
+        mockCompany.companies = [];
+        mockCompany.loading = false;
+        mockCompaniesApi.list.mockResolvedValue([]);
+      });
+
+      /** Mount on step 1, type the organization name, press Continue. */
+      async function nameOrganization() {
+        const { root, queryClient } = render();
+        await act(async () => {
+          root.render(
+            <QueryClientProvider client={queryClient}>
+              <OnboardingWizard />
+            </QueryClientProvider>,
+          );
+        });
+        await flushReact();
+
+        const field = document.body.querySelector(
+          "#onboarding-company-name",
+        ) as HTMLInputElement;
+        await act(async () => {
+          setControlledValue(field, "Initech");
+        });
+        await flushReact();
+
+        const continueButton = [...document.body.querySelectorAll("button")].find(
+          (b) => b.textContent?.trim().startsWith("Continue"),
+        )!;
+        await act(async () => {
+          continueButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        });
+        // The hire is queued behind the company id and the model list, both of
+        // which settle on their own renders.
+        for (let i = 0; i < 12; i++) await flushReact();
+        return root;
+      }
+
+      it("hires Dustin as CEO on OpenCode without asking anything else", async () => {
+        const root = await nameOrganization();
+
+        expect(mockCompaniesApi.create).toHaveBeenCalledWith({ name: "Initech" });
+        // Neither question was asked. Naming the agent and connecting a model
+        // are the two steps this run skips.
+        expect(document.body.textContent).not.toContain("Create your first agent");
+        expect(document.body.textContent).not.toContain("Connect a model");
+
+        expect(mockAgentsApi.hire).toHaveBeenCalledTimes(1);
+        const hireBody = (mockAgentsApi.hire.mock.calls.at(-1) as unknown[])[1] as {
+          name: string;
+          role: string;
+          adapterType: string;
+          runtimeConfig: { aiConnection?: unknown };
+        };
+        expect(hireBody.name).toBe("Dustin");
+        expect(hireBody.role).toBe("ceo");
+        expect(hireBody.adapterType).toBe("opencode_local");
+        expect(mockAdapterBuild.buildAdapterConfig).toHaveBeenCalledWith(
+          expect.objectContaining({ adapterType: "opencode_local", model: ZEN_MODEL }),
+        );
+        // No credential, so nothing to bind — and no managed connection to
+        // create, which would be an OpenRouter binding the server refuses
+        // against a Zen model.
+        expect(hireBody.runtimeConfig.aiConnection).toBeUndefined();
+        expect(managedApi.create).not.toHaveBeenCalled();
+
+        // Landed on the review step, where the rest of what it chose is visible
+        // and the customer can still change it before launching.
+        expect(document.body.textContent).toContain("Dustin is ready to work!");
+
+        await act(async () => root.unmount());
+      });
+
+      it("asks the two questions instead when the box is ticked", async () => {
+        const { root, queryClient } = render();
+        await act(async () => {
+          root.render(
+            <QueryClientProvider client={queryClient}>
+              <OnboardingWizard />
+            </QueryClientProvider>,
+          );
+        });
+        await flushReact();
+
+        await tickAdvancedSetup();
+        expect(document.body.textContent).toContain(
+          "You will name your first agent and choose its model.",
+        );
+
+        const field = document.body.querySelector(
+          "#onboarding-company-name",
+        ) as HTMLInputElement;
+        await act(async () => {
+          setControlledValue(field, "Initech");
+        });
+        await flushReact();
+        const continueButton = [...document.body.querySelectorAll("button")].find(
+          (b) => b.textContent?.trim().startsWith("Continue"),
+        )!;
+        await act(async () => {
+          continueButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        });
+        for (let i = 0; i < 8; i++) await flushReact();
+
+        // The old walk, intact: name the agent, then connect a model. No hire.
+        expect(document.body.textContent).toContain("Create your first agent");
+        expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+
+        await act(async () => root.unmount());
+      });
+
+      it("sends Back from the review to the name step, not to a tile row never shown", async () => {
+        const root = await nameOrganization();
+        expect(document.body.textContent).toContain("Dustin is ready to work!");
+
+        await act(async () => {
+          [...document.body.querySelectorAll("button")]
+            .find((b) => b.textContent?.trim().startsWith("Back"))!
+            .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        });
+        await flushReact();
+
+        // Step 1, where the box that chose this walk still is. The connect step
+        // would be a row of tiles this customer never saw.
+        expect(document.body.querySelector("#onboarding-company-name")).toBeTruthy();
+        expect(document.body.textContent).not.toContain("Connect a model");
+
+        await act(async () => root.unmount());
+      });
+
+      it("draws a two-segment strip, so it never claims the two skipped steps", async () => {
+        const root = await nameOrganization();
+
+        // The full walk's strip is four segments and lights one per step passed,
+        // so drawing it here would report "Create your first agent" and "Connect
+        // a model" as completed — questions this run was never asked.
+        expect(document.body.textContent).toContain("Step 2 of 2");
+        // `size-1.5` is the strip's own dot — a size no other control on this
+        // screen uses, and a narrower key than `rounded-full`, which the footer's
+        // buttons share.
+        const segments = [...document.body.querySelectorAll("button")].filter((b) =>
+          b.className.includes("size-1.5"),
+        );
+        expect(segments).toHaveLength(2);
+        // Only the first is a way back, and it is the name step.
+        expect(segments[1]!.hasAttribute("disabled")).toBe(true);
+
+        await act(async () => root.unmount());
+      });
+
+      it("drops a queued hire when the run is closed, so a reopened run cannot fire it", async () => {
+        // A queue outlives the step that set it, and closing the wizard does not
+        // unmount it — `if (!effectiveOnboardingOpen) return null` keeps every
+        // hook alive. So whatever is queued has to be dropped by `reset`, or the
+        // next run inherits it: reopened against the same company, everything the
+        // hire needs is ready and it fires an agent the customer abandoned and
+        // never asked for.
+        //
+        // This pins the outcome — no hire after a close. Two guards could produce it:
+        // `reset` dropping the queue, and the effect's company check. This walk
+        // reaches only the first, because reopening lands on the *same* company
+        // and so satisfies the check. The check's own case — a route handing the
+        // wizard a different company mid-queue — needs a controllable `useLocation`,
+        // which this suite does not have; it is covered in
+        // `OnboardingWizard.step.test.tsx`.
+        //
+        // Timed so the reopen lands inside the queue's window. The first model
+        // list never comes back, holding the queue on the company it was made
+        // for; the reopen starts a *new* query (its key carries the company) and
+        // that one answers at once.
+        mockAgentsApi.adapterModels
+          .mockReturnValueOnce(new Promise<Array<{ id: string; label: string }>>(() => {}))
+          .mockResolvedValue([{ id: ZEN_MODEL, label: ZEN_MODEL }]);
+        mockCompany.companies = [{ id: "company-new", name: "Initech", issuePrefix: "INI" }];
+        mockCompaniesApi.list.mockResolvedValue(mockCompany.companies);
+
+        const { root, queryClient } = render();
+        const tree = (
+          <QueryClientProvider client={queryClient}>
+            <OnboardingWizard />
+          </QueryClientProvider>
+        );
+        await act(async () => {
+          root.render(tree);
+        });
+        await flushReact();
+
+        const field = document.body.querySelector(
+          "#onboarding-company-name",
+        ) as HTMLInputElement;
+        await act(async () => {
+          setControlledValue(field, "Initech");
+        });
+        await flushReact();
+        const continueButton = [...document.body.querySelectorAll("button")].find(
+          (b) => b.textContent?.trim().startsWith("Continue"),
+        )!;
+        await act(async () => {
+          continueButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        });
+        await flushReact();
+        expect(mockCompaniesApi.create).toHaveBeenCalled();
+        expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+
+        // Close the run. `reset` is what a closed wizard runs.
+        await act(async () => {
+          document.body.dispatchEvent(
+            new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+          );
+        });
+        for (let i = 0; i < 4; i++) await flushReact();
+        mockAgentsApi.hire.mockClear();
+        mockAdapterBuild.buildAdapterConfig.mockClear();
+
+        // Reopen the wizard on that same company.
+        mockDialog.onboardingOpen = true;
+        mockDialog.onboardingOptions = { companyId: "company-new" };
+        await act(async () => {
+          root.render(tree);
+        });
+        for (let i = 0; i < 8; i++) await flushReact();
+
+        expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+        expect(mockAdapterBuild.buildAdapterConfig).not.toHaveBeenCalled();
 
         await act(async () => root.unmount());
       });
@@ -1369,7 +1845,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     // from this page-load draft and made a successful create look like a reset.
     window.localStorage.setItem(
       ONBOARDING_STORAGE_KEY,
-      JSON.stringify({ step: 1, companyName: "", createdCompanyId: null }),
+      JSON.stringify({ step: 1, companyName: "", createdCompanyId: null, advancedSetup: true }),
     );
     let resolveRefetch: (companies: Array<{ id: string; name: string; issuePrefix: string }>) => void =
       () => {};
@@ -2132,13 +2608,16 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       //
       // The tile row is `recommendedAdapters`; the snap's idea of "visible" is
       // recommended *plus* the advanced list. An adapter in the second but not
-      // the first — a saved `opencode_local`, say — therefore satisfies the
+      // the first — a saved `gemini_local`, say — therefore satisfies the
       // snap, which leaves it alone, while the row it is supposed to be chosen
       // in never shows it. Nothing is highlighted, the canvas is shut, and with
       // the gate on `sourcePicked` the CTA was live: one press hires against an
       // adapter the customer has not seen on this screen.
-      mockAdapterRegistry.list = [{ type: "claude_local" }, { type: "opencode_local" }];
-      const { root } = await openStep4({ adapterType: "opencode_local" });
+      //
+      // `opencode_local` was the example here while it was un-recommended. It is
+      // a tile now, so the case needs one that is still off the row.
+      mockAdapterRegistry.list = [{ type: "claude_local" }, { type: "gemini_local" }];
+      const { root } = await openStep4({ adapterType: "gemini_local" });
 
       const tiles = [...document.body.querySelectorAll("button[aria-checked]")];
       expect(

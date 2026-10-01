@@ -35,6 +35,32 @@ const CREDENTIAL_TAG_LABEL: Record<CredentialMode, string> = {
 };
 
 /**
+ * The class a tile wrapper carries, given how many sources the row holds.
+ *
+ * Each token is the width one tile occupies in a row of that many, so the row
+ * reads the same open and collapsed — the survivor holds the width it already
+ * had and travels to the centre rather than growing. Pinned per width rather
+ * than computed because these are layout tokens in `index.css`, and a runtime
+ * `calc()` off a count would put a raw fraction in a component.
+ *
+ * The open row is the same width, not `flex-1`: with a fixed tile count the two
+ * are the same number, and one of them means the width cannot change between
+ * the row opening and collapsing. `flex-1` is the fallback for a width with no
+ * token — a count this component has not been given a token for, where the
+ * tiles genuinely do share whatever is left.
+ */
+function collapsedTileWidth(rowWidth: number): string {
+  switch (rowWidth) {
+    case 2:
+      return "w-(--sz-source-tile-two-up)";
+    case 3:
+      return "w-(--sz-source-tile-three-up)";
+    default:
+      return "flex-1";
+  }
+}
+
+/**
  * The credential tag, swapping in a fixed-height slot.
  *
  * The slot has to hold its height whatever is in it: the tag is the last line
@@ -179,6 +205,9 @@ export function ModelSourceTiles({
   };
 
   const shown = collapsed ? sources.filter((source) => source.id === selectedId) : sources;
+  // How many the row held before it collapsed. The survivor's width has to
+  // match that, not the row's current contents — see the wrapper below.
+  const rowWidth = sources.length;
 
   return (
     <div
@@ -204,7 +233,13 @@ export function ModelSourceTiles({
         chasing a gap that is still closing.
 
         The wrapper carries the width, not the tile: held at the width it had
-        with two in the row, so the kept tile travels without also growing.
+        with every source in the row, so the kept tile travels without also
+        growing. That width is a function of how many there were — a row of two
+        and a row of three leave very different survivors, and pinning either one
+        grows the tile of the other. An unlisted width falls back to `flex-1`,
+        which is the defect rather than a fixed one, but the connect step's row
+        is built from the display registry's `recommended` set, so its size is
+        product-side rather than something this component decides.
       */}
       <AnimatePresence initial={false} mode="popLayout">
         {shown.map((source) => (
@@ -213,10 +248,7 @@ export function ModelSourceTiles({
             layout
             transition={SOURCE_COLLAPSE_MOVE}
             exit={{ opacity: 0, transition: SOURCE_EXIT_FADE }}
-            className={cn(
-              "flex min-w-0",
-              collapsed ? "w-(--sz-source-tile-two-up)" : "flex-1",
-            )}
+            className={cn("flex min-w-0", collapsedTileWidth(rowWidth))}
           >
             <ModelSourceTile
               source={source}

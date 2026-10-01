@@ -116,6 +116,15 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     label: "OpenCode",
     description: "OpenCode multi-provider harness",
     icon: OpenCodeLogoIcon,
+    // Recommended because it is the only source whose default model needs no
+    // credential: onboarding seeds a free OpenCode Zen model, which OpenCode
+    // serves without a key. The other two stall on a subscription or a key before
+    // the first agent can run.
+    //
+    // Not the only source that can be set up without more thought — every one of
+    // these still needs its CLI on the host, which the step's environment probe
+    // checks. What differs is the credential, not the install.
+    recommended: true,
   },
   pi_local: {
     label: "Pi",

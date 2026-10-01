@@ -46,4 +46,21 @@ describe("adapter display registry", () => {
       description: "External gateway adapter",
     });
   });
+
+  it("recommends exactly the sources the connect step offers as tiles", () => {
+    // `recommended` is the whole of what puts a source on the connect step's
+    // tile row: the wizard filters the adapter grid on this flag and renders
+    // only the result, so an adapter carrying it is reachable during onboarding
+    // and one missing it is not — there is no other route, since the
+    // "Advanced settings" disclosure that used to list the rest is gone.
+    //
+    // The list is pinned exactly rather than by inclusion so a fourth
+    // recommendation cannot land here unnoticed: it would appear as a tile on a
+    // row sized for three (see `collapsedTileWidth`) and would have to work
+    // end-to-end to earn its place.
+    const recommended = Object.keys(getAdapterLabels()).filter(
+      (type) => getAdapterDisplay(type).recommended === true,
+    );
+    expect(recommended.sort()).toEqual(["claude_local", "codex_local", "opencode_local"]);
+  });
 });

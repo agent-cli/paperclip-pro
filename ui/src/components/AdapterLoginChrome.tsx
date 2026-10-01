@@ -50,6 +50,12 @@ export const CONNECT_SOURCE_NAMES: Record<string, string> = {
   claude_local: "Claude",
   codex_local: "OpenAI",
   grok_local: "Grok",
+  // Not "OpenRouter". The provider table maps this adapter to OpenRouter, but
+  // that is only true of `openrouter/*` models — onboarding seeds a Zen model,
+  // and this name is what the connect step's tile and its sign-in button read.
+  // "OpenRouter" there would name the wrong company for the thing being
+  // connected, and would invite a key the step does not even need.
+  opencode_local: "OpenCode",
 };
 
 /** The provider name for a source, falling back to the type when unlisted. */

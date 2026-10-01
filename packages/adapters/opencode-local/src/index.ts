@@ -44,6 +44,19 @@ export const SANDBOX_INSTALL_COMMAND =
 
 export const DEFAULT_OPENCODE_LOCAL_MODEL = "openai/gpt-5.2-codex";
 
+/**
+ * A free OpenCode Zen model, served without a credential.
+ *
+ * Listed here rather than only in the onboarding wizard because this array is
+ * the adapter's static fallback: `listOpenCodeModels` returns `[]` when OpenCode
+ * is missing or its discovery fails, and `listAdapterModels` falls back to this
+ * list. A model the wizard can seed but the fallback cannot name fails closed in
+ * the one place that checks a discovered list — the wizard refuses the hire as
+ * "unavailable" — so the catalog has to know the id even where it is not the
+ * default.
+ */
+export const OPENCODE_ZEN_FREE_MODEL = "opencode/space-bunny-free";
+
 export function isValidOpenCodeModelId(value: unknown): value is string {
   if (typeof value !== "string") return false;
   const trimmed = value.trim();
@@ -52,6 +65,7 @@ export function isValidOpenCodeModelId(value: unknown): value is string {
 }
 
 export const models: Array<{ id: string; label: string }> = [
+  { id: OPENCODE_ZEN_FREE_MODEL, label: "OpenCode Zen (free)" },
   { id: DEFAULT_OPENCODE_LOCAL_MODEL, label: DEFAULT_OPENCODE_LOCAL_MODEL },
   { id: "openai/gpt-6-astra", label: "openai/gpt-6-astra" },
   { id: "openai/gpt-6-sol", label: "openai/gpt-6-sol" },
